@@ -21,7 +21,7 @@ app.post('/api/contact', async (req, res) => {
     const { data, error } = await resend.emails.send({
       from: 'Procarré <onboarding@resend.dev>', // remplace par ton domaine vérifié plus tard
       to: ['ton-email-de-reception@example.com'],
-      reply_to: email,
+      replyTo: email,
       subject: subject || `Nouveau message de ${name}`,
       html: `
         <h2>Nouveau message depuis le formulaire Procarré</h2>

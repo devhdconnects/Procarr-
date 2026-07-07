@@ -6,94 +6,178 @@ import dotenv from 'dotenv';
 
 dotenv.config();
 
-const app = express();
-const PORT = 3001;
+const requiredEnv = ['RESEND_API_KEY', 'FROM_EMAIL', 'TO_EMAIL'];
+const missingEnv = requiredEnv.filter(key => !process.env[key]);
 
+if (missingEnv.length > 0) {
+  throw new Error(`Variables serveur manquantes: ${missingEnv.join(', ')}`);
+}
+
+const app = express();
+const PORT = Number(process.env.PORT || 3001);
 const resend = new Resend(process.env.RESEND_API_KEY);
 
-// Middlewares
+const allowedOrigins = (process.env.CORS_ORIGINS || 'http://localhost:5173')
+  .split(',')
+  .map(origin => origin.trim())
+  .filter(Boolean);
+
+const recipients = process.env.TO_EMAIL.split(',')
+  .map(email => email.trim())
+  .filter(Boolean);
+
+const requestHits = new Map();
+const WINDOW_MS = 15 * 60 * 1000;
+const MAX_REQUESTS_PER_WINDOW = 5;
+const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+
 app.use(
   cors({
-    origin: 'http://localhost:5173',
+    origin(origin, callback) {
+      if (!origin || allowedOrigins.includes(origin)) {
+        callback(null, true);
+        return;
+      }
+
+      callback(new Error(`Origine CORS non autorisee: ${origin}`));
+    },
   }),
 );
-app.use(express.json());
+app.use(express.json({ limit: '50kb' }));
 
-// Route de test
+function trimValue(value, maxLength = 2000) {
+  return typeof value === 'string' ? value.trim().slice(0, maxLength) : '';
+}
+
+function validateLead(body = {}, type) {
+  const data = {
+    name: trimValue(body.name, 80),
+    email: trimValue(body.email, 120).toLowerCase(),
+    phone: trimValue(body.phone, 30),
+    subject: trimValue(body.subject, 120),
+    city: trimValue(body.city, 80),
+    projectType: trimValue(body.projectType, 80),
+    budget: trimValue(body.budget, 80),
+    message: trimValue(body.message, 2500),
+    website: trimValue(body.website, 200),
+  };
+
+  const errors = {};
+  if (!data.name) errors.name = 'Nom requis';
+  if (!data.email) errors.email = 'Email requis';
+  if (data.email && !EMAIL_RE.test(data.email)) errors.email = 'Email invalide';
+  if (!data.message) {
+    errors.message =
+      type === 'devis' ? 'Description du projet requise' : 'Message requis';
+  }
+
+  return { data, errors };
+}
+
+function rateLimit(req, res, next) {
+  const ip = req.ip || req.headers['x-forwarded-for'] || 'unknown';
+  const now = Date.now();
+  const current = requestHits.get(ip) || { count: 0, resetAt: now + WINDOW_MS };
+
+  if (current.resetAt < now) {
+    current.count = 0;
+    current.resetAt = now + WINDOW_MS;
+  }
+
+  current.count += 1;
+  requestHits.set(ip, current);
+
+  if (current.count > MAX_REQUESTS_PER_WINDOW) {
+    return res.status(429).json({ ok: false, error: 'rate_limited' });
+  }
+
+  next();
+}
+
+async function sendLeadEmail(type, data) {
+  const isDevis = type === 'devis';
+  const subject = isDevis
+    ? `Nouveau devis Procarré - ${data.name}`
+    : data.subject
+      ? `Contact Procarré - ${data.subject}`
+      : `Nouveau message contact - ${data.name}`;
+
+  const text = isDevis
+    ? `
+NOUVELLE DEMANDE DE DEVIS
+
+Nom: ${data.name}
+Email: ${data.email}
+Telephone: ${data.phone || '-'}
+Ville: ${data.city || '-'}
+Type de projet: ${data.projectType || '-'}
+Budget: ${data.budget || '-'}
+
+Message:
+${data.message}
+      `.trim()
+    : `
+NOUVEAU MESSAGE CONTACT
+
+Nom: ${data.name}
+Email: ${data.email}
+Telephone: ${data.phone || '-'}
+Objet: ${data.subject || '-'}
+
+Message:
+${data.message}
+      `.trim();
+
+  const { data: resendData, error } = await resend.emails.send({
+    from: process.env.FROM_EMAIL,
+    to: recipients,
+    replyTo: data.email,
+    subject,
+    text,
+  });
+
+  if (error) {
+    const message = error.message || JSON.stringify(error);
+    throw new Error(`Resend error: ${message}`);
+  }
+
+  return resendData;
+}
+
 app.get('/', (req, res) => {
   res.json({ status: 'ok', message: 'Procarré API' });
 });
 
-// ----- DEVIS -----
-app.post('/api/devis', async (req, res) => {
-  const body = req.body;
+app.get('/api/health', (req, res) => {
+  res.json({ ok: true });
+});
 
-  const errors = {};
-  if (!body.name || !body.name.trim()) {
-    errors.name = 'Nom requis';
-  }
-  if (!body.email || !body.email.trim()) {
-    errors.email = 'Email requis';
-  }
-  if (!body.message || !body.message.trim()) {
-    errors.message = 'Message requis';
+app.post('/api/devis', rateLimit, async (req, res) => {
+  const { data, errors } = validateLead(req.body, 'devis');
+
+  if (data.website) {
+    return res.status(200).json({ ok: true });
   }
 
   if (Object.keys(errors).length > 0) {
     return res.status(400).json({ ok: false, errors });
   }
 
-  console.log('Nouvelle demande de devis:', body);
-
   try {
-    const { data, error } = await resend.emails.send({
-      from: process.env.FROM_EMAIL,
-      to: process.env.TO_EMAIL,
-      subject: `Nouveau devis Procarré - ${body.name}`,
-      text: `
-NOUVELLE DEMANDE DE DEVIS
-
-Nom: ${body.name}
-Email: ${body.email}
-Téléphone: ${body.phone || '-'}
-Ville: ${body.city || '-'}
-Type de projet: ${body.projectType || '-'}
-Budget: ${body.budget || '-'}
-
-Message:
-${body.message}
-      `.trim(),
-    });
-
-    if (error) {
-      console.error('Erreur Resend (devis):', error);
-      return res.status(500).json({ ok: false, error: 'email_failed' });
-    }
-
-    console.log('Email devis envoyé:', data);
-    return res.status(200).json({ ok: true });
+    const result = await sendLeadEmail('devis', data);
+    console.log('Email devis envoye:', result?.id || 'sans id');
+    return res.status(200).json({ ok: true, id: result?.id });
   } catch (err) {
     console.error('Erreur envoi email devis:', err);
     return res.status(500).json({ ok: false, error: 'email_failed' });
   }
 });
 
-// ----- CONTACT -----
-app.post('/api/contact', async (req, res) => {
-  const body = req.body;
-  console.log('Nouveau message contact:', body);
+app.post('/api/contact', rateLimit, async (req, res) => {
+  const { data, errors } = validateLead(req.body, 'contact');
 
-  const { name, email, phone, subject, message } = body;
-
-  const errors = {};
-  if (!name || !name.trim()) {
-    errors.name = 'Nom requis';
-  }
-  if (!email || !email.trim()) {
-    errors.email = 'Email requis';
-  }
-  if (!message || !message.trim()) {
-    errors.message = 'Message requis';
+  if (data.website) {
+    return res.status(200).json({ ok: true });
   }
 
   if (Object.keys(errors).length > 0) {
@@ -101,34 +185,9 @@ app.post('/api/contact', async (req, res) => {
   }
 
   try {
-    const { data, error } = await resend.emails.send({
-      from: process.env.FROM_EMAIL,
-      to: process.env.TO_EMAIL,
-      subject:
-        subject && subject.trim()
-          ? `Contact Procarré - ${subject}`
-          : `Nouveau message contact - ${name}`,
-      text: `
-NOUVEAU MESSAGE CONTACT
-
-Nom: ${name}
-Email: ${email}
-Téléphone: ${phone || '-'}
-
-Objet: ${subject || '-'}
-
-Message:
-${message}
-      `.trim(),
-    });
-
-    if (error) {
-      console.error('Erreur Resend (contact):', error);
-      return res.status(500).json({ ok: false, error: 'email_failed' });
-    }
-
-    console.log('Email contact envoyé:', data);
-    return res.status(200).json({ ok: true });
+    const result = await sendLeadEmail('contact', data);
+    console.log('Email contact envoye:', result?.id || 'sans id');
+    return res.status(200).json({ ok: true, id: result?.id });
   } catch (err) {
     console.error('Erreur envoi email contact:', err);
     return res.status(500).json({ ok: false, error: 'email_failed' });
@@ -137,4 +196,5 @@ ${message}
 
 app.listen(PORT, () => {
   console.log(`API Procarré en écoute sur http://localhost:${PORT}`);
+  console.log(`Origines CORS autorisées: ${allowedOrigins.join(', ')}`);
 });

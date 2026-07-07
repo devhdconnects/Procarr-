@@ -20,7 +20,7 @@ export async function postContact(req, res) {
     const { data, error } = await resend.emails.send({
       from: process.env.FROM_EMAIL,             // ← à la place de contact@ton-domaine.fr
       to: [process.env.TO_EMAIL as string],     // ← ton email de réception
-      reply_to: email,
+      replyTo: email,
       subject: subject || `Nouveau message de ${name}`,
       html: `
         <h2>Nouveau message depuis le formulaire Procarré</h2>

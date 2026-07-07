@@ -97,7 +97,7 @@ export function Footer() {
                 target="_blank"
                 rel="noopener noreferrer"
               >
-                Voir Procarré &amp; Fils sur Google Maps
+                Voir Procarré &amp; Fils sur Google Maps
               </a>
             </li>
           </ul>

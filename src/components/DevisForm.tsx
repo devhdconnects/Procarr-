@@ -1,5 +1,6 @@
 // src/components/DevisForm.tsx
 import { useState } from 'react';
+import { postJson } from '../lib/api';
 
 type Props = {
   onClose?: () => void;
@@ -13,6 +14,7 @@ type FormState = {
   projectType: string;
   budget: string;
   message: string;
+  website: string;
 };
 
 type Errors = Partial<Record<keyof FormState, string>>;
@@ -26,12 +28,13 @@ export function DevisForm({ onClose }: Props) {
     projectType: '',
     budget: '',
     message: '',
+    website: '',
   });
 
   const [errors, setErrors] = useState<Errors>({});
-  const [status, setStatus] = useState<'idle' | 'submitting' | 'success'>(
-    'idle',
-  );
+  const [status, setStatus] = useState<
+    'idle' | 'submitting' | 'success' | 'error'
+  >('idle');
 
   const handleChange = (
     e: React.ChangeEvent<
@@ -71,20 +74,12 @@ export function DevisForm({ onClose }: Props) {
     setStatus('submitting');
 
     try {
-      const res = await fetch('http://localhost:3001/api/devis', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(form),
-      });
-
-      if (!res.ok) {
-        throw new Error('Request failed');
-      }
+      await postJson('/api/devis', form);
 
       setStatus('success');
     } catch (err) {
       console.error(err);
-      setStatus('idle');
+      setStatus('error');
     }
   };
 
@@ -150,6 +145,16 @@ export function DevisForm({ onClose }: Props) {
             onSubmit={handleSubmit}
             style={{ display: 'grid', gap: '0.75rem' }}
           >
+            <input
+              type="text"
+              name="website"
+              value={form.website}
+              onChange={handleChange}
+              tabIndex={-1}
+              autoComplete="off"
+              style={{ display: 'none' }}
+            />
+
             <div>
               <input
                 name="name"
@@ -248,6 +253,13 @@ export function DevisForm({ onClose }: Props) {
                 </p>
               )}
             </div>
+
+            {status === 'error' && (
+              <p style={{ color: '#b91c1c', fontSize: '0.9rem' }}>
+                L’envoi a échoué. Vous pouvez réessayer ou nous contacter
+                directement par téléphone.
+              </p>
+            )}
 
             <button
               type="submit"
